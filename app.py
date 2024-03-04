@@ -1,8 +1,9 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, Canvas, Scrollbar
+from tkinter import ttk, filedialog, Canvas, Scrollbar, messagebox
 from PIL import Image, ImageTk
 import pandas as pd
 import os
+import re
 
 
 class ImageTagger(tk.Tk):
@@ -20,6 +21,9 @@ class ImageTagger(tk.Tk):
         self.current_cluster = None
         self.current_image_index = 0
 
+        self.image_column_name = None
+        self.images_directory = None
+
         self.create_widgets()
 
     '''
@@ -29,6 +33,10 @@ class ImageTagger(tk.Tk):
     def create_widgets(self):
         load_csv_button = tk.Button(self, text="Cargar CSV", command=self.open_csv)
         load_csv_button.pack()
+
+        select_dir_button = tk.Button(self, text="Seleccionar directorio de imágenes",
+                                      command=self.select_images_directory)
+        select_dir_button.pack()
 
         self.cluster_selector = ttk.Combobox(self, state="readonly")
         self.cluster_selector.pack()
@@ -64,35 +72,89 @@ class ImageTagger(tk.Tk):
         tag_button.pack()
 
         navigation_frame = tk.Frame(self)
-        navigation_frame.pack()
+        navigation_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
+
+        reset_button = tk.Button(navigation_frame, text="⚠️ Reset", command=self.confirm_reset)
+        reset_button.pack(side=tk.RIGHT, padx=20)
 
         prev_button = tk.Button(navigation_frame, text="Anterior", command=self.prev_image)
-        prev_button.pack(side=tk.LEFT)
+        prev_button.pack(side=tk.LEFT, padx=20)
 
         next_button = tk.Button(navigation_frame, text="Siguiente", command=self.next_image)
-        next_button.pack(side=tk.RIGHT)
+        next_button.pack(side=tk.LEFT, padx=20)
 
     '''
     Open a file dialog to select a CSV file
     '''
 
     def open_csv(self):
-        filepath = filedialog.askopenfilename(
+        self.filepath = filedialog.askopenfilename(
             title="Selecciona un archivo CSV",
             filetypes=(("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*"))
         )
-        if filepath:
-            self.load_csv(filepath)
+        if self.filepath:
+            self.load_csv(self.filepath)
 
     '''
     Load a CSV file and populate the combobox with the unique values of the 'activity_label' column
     '''
 
     def load_csv(self, filepath):
-        self.df = pd.read_csv(filepath, sep=';', encoding='utf-8')
-        self.df['activity_label'] = self.df['activity_label'].astype(str)
-        self.images_by_cluster = self.df.groupby('activity_label')['Screenshot'].apply(list).to_dict()
-        self.cluster_selector['values'] = sorted(self.images_by_cluster.keys())
+        try:
+            self.df = pd.read_csv(filepath, encoding='utf-8', sep=';')
+            self.image_column_name = self.detect_image_column(self.df)
+            if not self.image_column_name:
+                messagebox.showerror("Error", "No se pudo detectar la columna de imágenes en el archivo CSV.")
+                return
+            self.images_by_cluster = self.df.groupby('activity_label')[self.image_column_name].apply(list).to_dict()
+            self.images_by_cluster = {str(k): v for k, v in self.images_by_cluster.items()}
+            print('CSV Cargado. Clusteres: ', self.images_by_cluster)
+            self.update_cluster_selector()
+        except Exception as e:
+            messagebox.showerror("Error al cargar CSV", str(e))
+
+    '''
+    Save the changes made to the CSV file
+    '''
+
+    def save_changes(self):
+        try:
+            self.df.to_csv(self.filepath, index=False, sep=';',
+                           encoding='utf-8')  # Usa el mismo path y configuración que al cargar
+            print("Cambios guardados exitosamente.")
+        except Exception as e:
+            print(f"Error al guardar los cambios: {e}")
+
+    '''
+    Open a file dialog to select a directory containing the images
+    '''
+
+    def select_images_directory(self):
+        directory = filedialog.askdirectory(title="Selecciona el directorio de imágenes")
+        print(f'Directorio seleccionado: {directory}')
+        if directory:
+            self.images_directory = directory
+            self.update_cluster_selector()
+
+    '''
+    Detect the column containing the image paths in the dataframe
+    '''
+    def detect_image_column(self, dataframe):
+        for col in dataframe.columns:
+            if dataframe[col].dtype == 'object' and dataframe[col].str.contains(r'\.(jpg|jpeg|png)$', regex=True).any():
+                return col
+        return None
+
+    '''
+    Update the values of the cluster combobox
+    '''
+    def update_cluster_selector(self):
+        if self.images_by_cluster:
+            cluster_ids = sorted(self.images_by_cluster.keys())
+            self.cluster_selector['values'] = cluster_ids
+            print(f"Clústeres actualizados: {cluster_ids}")
+        else:
+            print("Aún no se han cargado los clústeres.")
 
     '''
     Event handler for when a cluster is selected from the combobox
@@ -100,6 +162,7 @@ class ImageTagger(tk.Tk):
 
     def on_cluster_selected(self, event):
         self.current_cluster = self.cluster_selector.get()
+        print(f'Cluster seleccionado: {self.current_cluster}')
         self.current_image_index = 0
         self.update_previews()
         self.show_images()
@@ -111,10 +174,12 @@ class ImageTagger(tk.Tk):
     def update_previews(self):
         for widget in self.previews_container.winfo_children():
             widget.destroy()
-
-        if self.current_cluster in self.images_by_cluster:
+        print(f'Cluster actual: {self.current_cluster}',
+              f'Imagenes por cluster: {self.images_by_cluster}', f'Directorio de imagenes: {self.images_directory}')
+        if self.current_cluster in self.images_by_cluster and self.images_directory:
             for img_index, img_name in enumerate(self.images_by_cluster[self.current_cluster]):
-                img_path = os.path.join('resources', 'sc_0_size50_Balanced', img_name)
+                img_path = os.path.join(self.images_directory, img_name)
+                print(f'Imagen: {img_path}')
                 self.add_preview(img_path, img_index)
 
         self.previews_container.update_idletasks()
@@ -137,11 +202,11 @@ class ImageTagger(tk.Tk):
             label_img.image = img_tk
             label_img.pack()
 
-            activity_manual_value = \
-                self.df.loc[self.df['Screenshot'] == os.path.basename(img_path), 'activity_manual'].values[0]
+            activity_manual_value = self.df.loc[
+                self.df[self.image_column_name].apply(lambda x: os.path.basename(x)) == os.path.basename(
+                    img_path), 'activity_manual'].values[0]
             if pd.isna(activity_manual_value):
                 activity_manual_value = "NA"
-
             label_text = tk.Label(frame, text=f"#{img_index + 1} - {activity_manual_value}")
             label_text.pack()
 
@@ -150,10 +215,11 @@ class ImageTagger(tk.Tk):
     '''
 
     def show_images(self):
-        if self.current_cluster in self.images_by_cluster:
+        if self.current_cluster in self.images_by_cluster and self.images_directory:
             img_names = self.images_by_cluster[self.current_cluster]
             if img_names:
-                img_path = os.path.join('resources', 'sc_0_size50_Balanced', img_names[self.current_image_index])
+                img_path = os.path.join(self.images_directory,
+                                        img_names[self.current_image_index])
                 self.display_image(img_path)
                 self.update_image_counter()
 
@@ -162,6 +228,7 @@ class ImageTagger(tk.Tk):
     '''
 
     def display_image(self, img_path):
+        print(f'Imagen a mostrar: {img_path}')
         if os.path.exists(img_path):
             img = Image.open(img_path)
             img = img.resize((800, 600))
@@ -204,11 +271,18 @@ class ImageTagger(tk.Tk):
     '''
 
     def calculate_and_update_precision(self):
+
         correct_assignments = 0
+        attempted_manual_tags = 0
+
         for manual, label in zip(self.df['activity_manual'], self.df['activity_label']):
-            if manual in letter_to_number_mapping and letter_to_number_mapping[manual] == label:
-                correct_assignments += 1
-        precision = (correct_assignments / len(self.df)) * 100 if len(self.df) > 0 else 0
+            if pd.notna(
+                    manual) and manual != 'NA':
+                attempted_manual_tags += 1
+                if str(label) == letter_to_number_mapping.get(manual, ''):
+                    correct_assignments += 1
+
+        precision = (correct_assignments / attempted_manual_tags) * 100 if attempted_manual_tags > 0 else 0
         self.precision_label.config(text=f"Precisión: {precision:.2f}%")
 
     '''
@@ -217,11 +291,33 @@ class ImageTagger(tk.Tk):
 
     def assign_manual_tag(self):
         manual_tag = self.manual_tag_entry.get()
+        print(f'Etiqueta manual: {manual_tag}')
         if self.current_cluster in self.images_by_cluster:
             selected_image_name = self.images_by_cluster[self.current_cluster][self.current_image_index]
-            self.df.loc[self.df['Screenshot'] == selected_image_name, 'activity_manual'] = manual_tag
+            self.df.loc[self.df[self.image_column_name] == selected_image_name, 'activity_manual'] = manual_tag
             self.update_previews()
             self.calculate_and_update_precision()
+            self.save_changes()
+
+    '''
+    Reset the manual tags in the dataframe
+    '''
+
+    def reset_manual_tags(self):
+        self.df['activity_manual'] = 'NA'
+        self.update_previews()
+        self.calculate_and_update_precision()
+        self.save_changes()
+        messagebox.showinfo('Reset completado', 'Se ha ejercido un reset sobre las etiquetas manuales')
+
+    '''
+    Confirm the reset of the manual tags
+    '''
+
+    def confirm_reset(self):
+        confirm = messagebox.askyesno('Confirmar reset', '¿Estás seguro de que deseas resetear las etiquetas manuales?')
+        if confirm:
+            self.reset_manual_tags()
 
 
 if __name__ == "__main__":
